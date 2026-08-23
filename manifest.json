@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "id": "gshulga.litellm",
+  "name": "LiteLLM",
+  "version": "0.1.0",
+  "author": "gshulga",
+  "license": "MIT",
+  "description": "Personal LiteLLM virtual-key budget and usage dashboard backed by Bitwarden Secrets Manager.",
+  "kinds": ["bar-widget", "service"],
+  "entryPoints": {
+    "barWidget": "Panel.qml",
+    "service": "Service.qml"
+  },
+  "barWidget": {
+    "displayName": "LiteLLM",
+    "description": "Remaining virtual-key budget, daily activity, and model usage.",
+    "category": "AI",
+    "aliases": ["litellm", "llm-usage", "llm-budget"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 300
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 60,
+        "max": 3600,
+        "step": 60,
+        "defaultValue": 300
+      }
+    ]
+  }
+}

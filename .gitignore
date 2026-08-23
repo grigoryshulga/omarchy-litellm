@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local Omarchy configuration, BWS credentials, and generated state.
+litellm.json
+litellm.env
+data.json

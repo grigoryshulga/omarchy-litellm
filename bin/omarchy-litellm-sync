@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+"""Fetch personal LiteLLM budget and aggregate usage for the Omarchy plugin.
+
+The virtual key is fetched from Bitwarden Secrets Manager and is kept only in
+the user's runtime directory. QML receives a small, secret-free JSON snapshot.
+"""
+import argparse
+import fcntl
+import json
+import os
+import shutil
+import stat
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import date, timedelta
+from pathlib import Path
+
+HOME = Path.home()
+CONFIG_HOME = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config"))
+STATE_HOME = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state"))
+CONFIG = CONFIG_HOME / "omarchy/litellm.json"
+# The LiteLLM-specific env file intentionally overrides the shared Jira BWS
+# setup when both exist, while either file remains sufficient for installation.
+ENV_FILES = (CONFIG_HOME / "omarchy/jira.env", CONFIG_HOME / "omarchy/litellm.env")
+CACHE = STATE_HOME / "omarchy/litellm/data.json"
+RUNTIME_ROOT = Path("/run/user/%d" % os.getuid())
+RUNTIME_DIR = RUNTIME_ROOT / "omarchy-litellm"
+KEY_CACHE = RUNTIME_DIR / "virtual-key.json"
+KEY_LOCK = RUNTIME_DIR / "virtual-key.lock"
+BWS_ATTEMPTS = 3
+TIMEOUT_SECONDS = 20
+
+
+class SyncError(RuntimeError):
+    """A safe, user-visible error that contains no credentials or API body."""
+
+
+class AuthenticationError(SyncError):
+    """LiteLLM rejected the cached key and it should be re-read from BWS."""
+
+
+def empty_cache():
+    return {
+        "schemaVersion": 1,
+        "state": "setup",
+        "syncedAt": 0,
+        "key": {},
+        "today": empty_metrics(),
+        "month": empty_metrics(),
+        "days": [],
+        "models": [],
+        "analyticsState": "unavailable",
+        "analyticsError": "",
+        "error": "",
+    }
+
+
+def empty_metrics():
+    return {
+        "spend": 0.0,
+        "totalTokens": 0,
+        "promptTokens": 0,
+        "completionTokens": 0,
+        "cacheReadTokens": 0,
+        "cacheWriteTokens": 0,
+        "requests": 0,
+        "successfulRequests": 0,
+        "failedRequests": 0,
+    }
+
+
+def number(value, default=0.0):
+    try:
+        result = float(value)
+        return result if result == result and abs(result) != float("inf") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def integer(value):
+    return int(number(value, 0))
+
+
+def read_json(path, fallback):
+    try:
+        with path.open(encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return fallback
+
+
+def write_cache(data):
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
+    temporary = CACHE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    temporary.replace(CACHE)
+
+
+def error_cache(message):
+    previous = read_json(CACHE, empty_cache())
+    if not isinstance(previous, dict):
+        previous = empty_cache()
+    previous.update({"state": "error", "error": message})
+    write_cache(previous)
+
+
+def read_bws_environment():
+    values = {}
+    for env_file in ENV_FILES:
+        try:
+            mode = stat.S_IMODE(env_file.stat().st_mode)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            continue
+        if mode & 0o077:
+            raise SyncError("BWS env-файл должен иметь права 600")
+        try:
+            lines = env_file.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            key, separator, value = line.partition("=")
+            if separator and key in ("BWS_ACCESS_TOKEN", "BWS_SERVER_URL") and value.strip():
+                values[key] = value.strip()
+    for key in ("BWS_ACCESS_TOKEN", "BWS_SERVER_URL"):
+        if os.environ.get(key):
+            values[key] = os.environ[key]
+    if not values.get("BWS_ACCESS_TOKEN"):
+        raise SyncError("не настроен BWS_ACCESS_TOKEN; создайте ~/.config/omarchy/litellm.env")
+    if values.get("BWS_SERVER_URL") and not values["BWS_SERVER_URL"].startswith("https://"):
+        raise SyncError("BWS_SERVER_URL должен использовать HTTPS")
+    return values
+
+
+def bws_binary():
+    path = shutil.which("bws") or str(HOME / ".local/bin/bws")
+    if not Path(path).is_file() or not os.access(path, os.X_OK):
+        raise SyncError("Bitwarden Secrets CLI не найден")
+    return path
+
+
+def command_json(args, env):
+    try:
+        result = subprocess.run(args, env=env, capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SyncError("Bitwarden Secrets CLI не ответил") from exc
+    if result.returncode != 0:
+        raise SyncError("Bitwarden Secrets CLI завершился с ошибкой")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise SyncError("Bitwarden Secrets CLI вернул неожиданный ответ") from exc
+
+
+def runtime_dir():
+    try:
+        info = RUNTIME_ROOT.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise SyncError("небезопасный пользовательский runtime-каталог")
+        RUNTIME_DIR.mkdir(mode=0o700, exist_ok=True)
+        info = RUNTIME_DIR.lstat()
+    except OSError as exc:
+        raise SyncError("не удалось создать runtime-кэш LiteLLM") from exc
+    if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+        raise SyncError("небезопасный runtime-кэш LiteLLM")
+    os.chmod(RUNTIME_DIR, 0o700)
+
+
+def open_key_lock():
+    runtime_dir()
+    try:
+        fd = os.open(KEY_LOCK, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as exc:
+        raise SyncError("не удалось заблокировать runtime-кэш LiteLLM") from exc
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        os.close(fd)
+        raise SyncError("небезопасная блокировка runtime-кэша LiteLLM")
+    os.fchmod(fd, 0o600)
+    return fd
+
+
+def cached_key(secret_key):
+    try:
+        fd = os.open(KEY_CACHE, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return ""
+    except OSError as exc:
+        raise SyncError("не удалось прочитать runtime-кэш LiteLLM") from exc
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+            raise SyncError("небезопасные права runtime-кэша LiteLLM")
+        with os.fdopen(fd, encoding="utf-8") as handle:
+            fd = -1
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SyncError("runtime-кэш LiteLLM повреждён") from exc
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    return str(data.get("value", "")).strip() if data.get("secretKey") == secret_key else ""
+
+
+def write_cached_key(secret_key, value):
+    runtime_dir()
+    temporary = RUNTIME_DIR / (".virtual-key.%d.%d" % (os.getpid(), time.monotonic_ns()))
+    fd = -1
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            fd = -1
+            json.dump({"secretKey": secret_key, "value": value}, handle, separators=(",", ":"))
+            handle.flush()
+            os.fchmod(handle.fileno(), 0o600)
+        os.replace(temporary, KEY_CACHE)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def clear_cached_key():
+    try:
+        KEY_CACHE.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def fetch_key(secret_key):
+    env = dict(os.environ)
+    env.update(read_bws_environment())
+    secret_id = ""
+    for attempt in range(BWS_ATTEMPTS):
+        try:
+            if not secret_id:
+                listed = command_json([bws_binary(), "secret", "list"], env)
+                entries = listed.get("data", listed) if isinstance(listed, dict) else listed
+                match = next((item for item in entries if item.get("key") == secret_key), None)
+                if not match or not match.get("id"):
+                    raise SyncError("секрет %s не найден в Bitwarden" % secret_key)
+                secret_id = str(match["id"])
+            secret = command_json([bws_binary(), "secret", "get", secret_id], env)
+            value = str(secret.get("value", "")).strip() if isinstance(secret, dict) else ""
+            if not value:
+                raise SyncError("Bitwarden вернул пустой virtual key LiteLLM")
+            return value
+        except SyncError:
+            if attempt + 1 == BWS_ATTEMPTS:
+                raise
+            time.sleep(0.2 * (2 ** attempt))
+    raise SyncError("не удалось получить virtual key LiteLLM")
+
+
+def virtual_key(secret_key):
+    value = cached_key(secret_key)
+    if value:
+        return value
+    lock_fd = open_key_lock()
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        value = cached_key(secret_key)
+        if value:
+            return value
+        value = fetch_key(secret_key)
+        write_cached_key(secret_key, value)
+        return value
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        os.close(lock_fd)
+
+
+def load_config():
+    config = read_json(CONFIG, {})
+    base_url = str(config.get("baseUrl", "")).rstrip("/")
+    if not base_url.startswith("https://") or any(char.isspace() for char in base_url):
+        raise SyncError("в ~/.config/omarchy/litellm.json нужен HTTPS baseUrl")
+    parsed = urllib.parse.urlparse(base_url)
+    if not parsed.hostname:
+        raise SyncError("LiteLLM baseUrl должен содержать hostname")
+    return base_url, str(config.get("secretKey", "LITELLM_VIRTUAL_KEY"))
+
+
+def api_get(base_url, path, key, query=None):
+    url = base_url + path
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    request = urllib.request.Request(url, headers={"x-litellm-api-key": key, "Accept": "application/json"})
+    class RejectRedirects(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, request, fp, code, message, headers, newurl):
+            return None
+
+    try:
+        # A LiteLLM base URL is a fixed origin. Do not forward a virtual key to
+        # any redirect target, regardless of its scheme or host.
+        with urllib.request.build_opener(RejectRedirects()).open(request, timeout=TIMEOUT_SECONDS) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (401, 403):
+            raise AuthenticationError("LiteLLM отклонил virtual key (%d)" % exc.code) from exc
+        raise SyncError("LiteLLM вернул HTTP %d" % exc.code) from exc
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise SyncError("LiteLLM недоступен") from exc
+    except json.JSONDecodeError as exc:
+        raise SyncError("LiteLLM вернул неожиданный ответ") from exc
+
+
+def key_info(raw):
+    info = raw.get("info", raw) if isinstance(raw, dict) else {}
+    if not isinstance(info, dict):
+        raise SyncError("LiteLLM вернул неожиданные данные ключа")
+    budget = number(info.get("max_budget"), -1)
+    spend = max(0, number(info.get("spend")))
+    return {
+        "alias": str(info.get("key_alias") or info.get("key_name") or "Virtual key"),
+        "spend": spend,
+        "maxBudget": budget if budget >= 0 else None,
+        "remaining": max(0, budget - spend) if budget >= 0 else None,
+        "remainingPercent": max(0, min(100, (budget - spend) * 100 / budget)) if budget > 0 else (0 if budget == 0 else None),
+        "budgetDuration": str(info.get("budget_duration") or ""),
+        "budgetResetAt": str(info.get("budget_reset_at") or ""),
+        "rpmLimit": integer(info.get("rpm_limit")),
+        "tpmLimit": integer(info.get("tpm_limit")),
+        "userId": str(info.get("user_id") or ""),
+        "blocked": info.get("blocked") is True,
+    }
+
+
+def metrics(raw):
+    raw = raw if isinstance(raw, dict) else {}
+    # Daily entries carry SpendMetrics directly, while per-model breakdowns
+    # wrap the same shape in MetricWithMetadata.metrics.
+    if isinstance(raw.get("metrics"), dict):
+        raw = raw["metrics"]
+    return {
+        "spend": max(0, number(raw.get("spend"))),
+        "totalTokens": integer(raw.get("total_tokens")),
+        "promptTokens": integer(raw.get("prompt_tokens")),
+        "completionTokens": integer(raw.get("completion_tokens")),
+        "cacheReadTokens": integer(raw.get("cache_read_input_tokens")),
+        "cacheWriteTokens": integer(raw.get("cache_creation_input_tokens")),
+        "requests": integer(raw.get("api_requests")),
+        "successfulRequests": integer(raw.get("successful_requests")),
+        "failedRequests": integer(raw.get("failed_requests")),
+    }
+
+
+def merge_metrics(target, source):
+    for field in target:
+        target[field] += source.get(field, 0)
+
+
+def analytics(raw, today):
+    results = raw.get("results", []) if isinstance(raw, dict) else []
+    days = []
+    month = empty_metrics()
+    today_metrics = empty_metrics()
+    models = {}
+    for entry in results if isinstance(results, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        current = metrics(entry.get("metrics"))
+        merge_metrics(month, current)
+        day = {"date": str(entry.get("date") or ""), **current}
+        days.append(day)
+        if day["date"] == today:
+            today_metrics = current
+        breakdown = entry.get("breakdown", {})
+        model_map = breakdown.get("models", {}) if isinstance(breakdown, dict) else {}
+        for name, values in model_map.items() if isinstance(model_map, dict) else []:
+            bucket = models.setdefault(str(name), empty_metrics())
+            merge_metrics(bucket, metrics(values))
+    days.sort(key=lambda item: item["date"])
+    model_rows = [{"name": name, **values} for name, values in models.items()]
+    model_rows.sort(key=lambda item: (-item["spend"], -item["totalTokens"], item["name"]))
+    return today_metrics, month, days[-30:], model_rows[:8]
+
+
+def sync():
+    base_url, secret_key = load_config()
+    key = virtual_key(secret_key)
+    try:
+        info = key_info(api_get(base_url, "/key/info", key))
+    except AuthenticationError:
+        # A long-lived shell can outlive key rotation. Make one new BWS lookup
+        # before reporting an authentication failure to the bar.
+        clear_cached_key()
+        key = virtual_key(secret_key)
+        info = key_info(api_get(base_url, "/key/info", key))
+    today = date.today()
+    data = empty_cache()
+    data.update({"state": "ready", "syncedAt": int(time.time() * 1000), "key": info, "error": ""})
+    try:
+        query = {"start_date": (today - timedelta(days=29)).isoformat(), "end_date": today.isoformat()}
+        if info["userId"]:
+            query["user_id"] = info["userId"]
+        response = api_get(base_url, "/user/daily/activity/aggregated", key, query)
+        data["today"], data["month"], data["days"], data["models"] = analytics(response, today.isoformat())
+        data["analyticsState"] = "ready"
+    except AuthenticationError:
+        clear_cached_key()
+        key = virtual_key(secret_key)
+        try:
+            response = api_get(base_url, "/user/daily/activity/aggregated", key, query)
+            data["today"], data["month"], data["days"], data["models"] = analytics(response, today.isoformat())
+            data["analyticsState"] = "ready"
+        except SyncError as exc:
+            data["analyticsState"] = "unavailable"
+            data["analyticsError"] = str(exc)
+    except SyncError as exc:
+        data["analyticsState"] = "unavailable"
+        data["analyticsError"] = str(exc)
+    write_cache(data)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("command", choices=("sync", "auth", "clear-auth"))
+    args = parser.parse_args()
+    try:
+        if args.command == "clear-auth":
+            clear_cached_key()
+        elif args.command == "auth":
+            _, secret_key = load_config()
+            virtual_key(secret_key)
+        else:
+            sync()
+    except SyncError as exc:
+        if args.command == "sync":
+            error_cache(str(exc))
+        print(str(exc), file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

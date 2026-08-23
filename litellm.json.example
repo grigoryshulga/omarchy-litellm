@@ -1,0 +1,4 @@
+{
+  "baseUrl": "https://litellm.example.com",
+  "secretKey": "LITELLM_VIRTUAL_KEY"
+}
