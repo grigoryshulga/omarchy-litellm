@@ -1,6 +1,9 @@
 import importlib.machinery
 import importlib.util
+import io
+import json
 import unittest
+import urllib.error
 from pathlib import Path
 
 
@@ -53,3 +56,30 @@ class AnalyticsTests(unittest.TestCase):
         self.assertEqual(month["totalTokens"], 0)
         self.assertEqual(len(days), 1)
         self.assertEqual(models, [])
+
+
+class BudgetExceededTests(unittest.TestCase):
+    def test_extracts_only_litellm_budget_ledger(self):
+        error = urllib.error.HTTPError(
+            "https://litellm.example.com/key/info", 429, "Too Many Requests", {},
+            io.BytesIO(json.dumps({"detail": "Budget has been exceeded! Current cost: 2.25, Max budget: 2.0"}).encode()),
+        )
+        result = sync.budget_exceeded(error)
+        self.assertIsInstance(result, sync.BudgetExceededError)
+        self.assertEqual(result.spend, 2.25)
+        self.assertEqual(result.max_budget, 2)
+
+    def test_extracts_nested_budget_ledger(self):
+        error = urllib.error.HTTPError(
+            "https://litellm.example.com/key/info", 429, "Too Many Requests", {},
+            io.BytesIO(json.dumps({"error": {"message": "Budget has been exceeded! Current cost: 2.25, Max budget: 2.0"}}).encode()),
+        )
+        result = sync.budget_exceeded(error)
+        self.assertIsInstance(result, sync.BudgetExceededError)
+
+    def test_ignores_other_429_response_shapes(self):
+        error = urllib.error.HTTPError(
+            "https://litellm.example.com/key/info", 429, "Too Many Requests", {},
+            io.BytesIO(b'{"detail":"Request limit reached"}'),
+        )
+        self.assertIsNone(sync.budget_exceeded(error))
