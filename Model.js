@@ -20,6 +20,8 @@ function emptyCache() {
     key: {},
     today: emptyMetrics(),
     month: emptyMetrics(),
+    week: emptyMetrics(),
+    weekStart: "",
     days: [],
     models: [],
     analyticsState: "unavailable",
@@ -61,33 +63,48 @@ function remainingRatio(key) {
 }
 
 function staleLabel(cache, now) {
-  if (!cache || !cache.syncedAt) return "ещё не обновлялось"
+  if (!cache || !cache.syncedAt) return "Not refreshed yet"
   var minutes = Math.max(0, Math.floor((number(now, Date.now()) - number(cache.syncedAt)) / 60000))
-  if (minutes < 1) return "обновлено только что"
-  return "обновлено " + minutes + " мин назад"
+  if (minutes < 1) return "Refreshed just now"
+  return "Refreshed " + minutes + " min ago"
 }
 
 function resetLabel(value, now) {
-  var reset = new Date(String(value || "")).getTime()
+  var reset = typeof value === "number" ? value : new Date(String(value || "")).getTime()
   if (!isFinite(reset)) return ""
   var remaining = reset - number(now, Date.now())
-  if (remaining <= 0) return "сброс сейчас"
+  if (remaining <= 0) return "Resets now"
   var minutes = Math.floor(remaining / 60000)
   var hours = Math.floor(minutes / 60)
   var days = Math.floor(hours / 24)
-  if (days > 0) return "сброс через " + days + "д " + (hours % 24) + "ч"
-  if (hours > 0) return "сброс через " + hours + "ч " + (minutes % 60) + "м"
-  return "сброс через " + Math.max(1, minutes) + "м"
+  if (days > 0) return "Resets in " + days + "d " + (hours % 24) + "h"
+  if (hours > 0) return "Resets in " + hours + "h " + (minutes % 60) + "m"
+  return "Resets in " + Math.max(1, minutes) + "m"
+}
+
+function weekResetLabel(now) {
+  var current = new Date(number(now, Date.now()))
+  var nextMonday = new Date(current.getFullYear(), current.getMonth(), current.getDate())
+  var daysSinceMonday = (current.getDay() + 6) % 7
+  nextMonday.setDate(nextMonday.getDate() + 7 - daysSinceMonday)
+  return resetLabel(nextMonday.getTime(), now)
+}
+
+function weekStartDate(now) {
+  var current = new Date(number(now, Date.now()))
+  current.setHours(0, 0, 0, 0)
+  current.setDate(current.getDate() - (current.getDay() + 6) % 7)
+  return current.getFullYear() + "-" + String(current.getMonth() + 1).padStart(2, "0") + "-" + String(current.getDate()).padStart(2, "0")
 }
 
 function dayLabel(value, now) {
   var date = String(value || "")
   var current = new Date(number(now, Date.now()))
   var today = current.getFullYear() + "-" + String(current.getMonth() + 1).padStart(2, "0") + "-" + String(current.getDate()).padStart(2, "0")
-  if (date === today) return "Сегодня"
+  if (date === today) return "Today"
   var parsed = new Date(date + "T00:00:00")
   if (isNaN(parsed.getTime())) return date
-  return ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"][parsed.getDay()]
+  return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][parsed.getDay()]
 }
 
 function dayPeak(days) {

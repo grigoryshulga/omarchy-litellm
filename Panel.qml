@@ -22,8 +22,17 @@ Panel {
   readonly property color track: Style.selectedFillFor(foreground, Color.accent)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property bool ready: cache.state === "ready" || cache.state === "error"
-  readonly property real remainingRatio: Model.remainingRatio(key)
-  readonly property bool alarming: remainingRatio >= 0 && remainingRatio < 0.1
+  readonly property bool weeklyUsageAvailable: cache.analyticsState === "ready"
+  readonly property bool weeklyCacheCurrent: String(cache.weekStart || "") === Model.weekStartDate(nowMs)
+  readonly property real weeklyLimit: {
+    var configured = Number(setting("weeklyLimitUsd", 40))
+    return isFinite(configured) && configured > 0 ? configured : 40
+  }
+  readonly property real weeklySpend: weeklyCacheCurrent ? Math.max(0, Model.number(cache.week ? cache.week.spend : 0)) : 0
+  readonly property real weeklySpentRatio: weeklyUsageAvailable ? Math.min(1, weeklySpend / weeklyLimit) : -1
+  readonly property real weeklyRemaining: Math.max(0, weeklyLimit - weeklySpend)
+  readonly property real weeklyRemainingRatio: weeklyUsageAvailable ? Math.max(0, 1 - weeklySpend / weeklyLimit) : -1
+  readonly property bool weeklyAlarming: weeklyRemainingRatio >= 0 && weeklyRemainingRatio < 0.1
   property double nowMs: Date.now()
 
   function refresh() { if (service) service.refresh() }
@@ -45,8 +54,8 @@ Panel {
   }
 
   Timer {
-    interval: 30000
-    running: root.opened
+    interval: 60000
+    running: true
     repeat: true
     onTriggered: root.nowMs = Date.now()
   }
@@ -60,8 +69,8 @@ Panel {
     hasVisualContent: true
     fixedWidth: icon.implicitWidth + percentage.implicitWidth + Style.space(13)
     dimmed: !root.ready
-    tooltipText: !root.ready ? "LiteLLM — требуется настройка" : root.remainingRatio >= 0
-      ? "LiteLLM — осталось " + Math.round(root.remainingRatio * 100) + "%" : "LiteLLM — лимит не задан"
+    tooltipText: !root.ready ? "LiteLLM - setup required" : !root.weeklyUsageAvailable
+      ? "LiteLLM - usage unavailable" : "LiteLLM - " + Math.round(root.weeklyRemainingRatio * 100) + "% of weekly limit remaining"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.refresh()
       else root.toggle()
@@ -70,18 +79,23 @@ Panel {
     Row {
       anchors.centerIn: parent
       spacing: Style.space(7)
-      Text {
+      Item {
         id: icon
-        text: "LLM"
-        color: button.foreground
-        font.family: root.fontFamily
-        font.pixelSize: Style.font.caption
-        font.bold: true
+        implicitWidth: Style.space(18)
+        implicitHeight: Style.space(18)
+        width: implicitWidth
+        height: implicitHeight
+
+        Image {
+          anchors.fill: parent
+          source: "litellm-light.svg"
+          fillMode: Image.PreserveAspectFit
+        }
       }
       Text {
         id: percentage
-        text: root.ready && root.remainingRatio >= 0 ? Math.round(root.remainingRatio * 100) + "%" : "—"
-        color: root.alarming ? root.urgent : button.foreground
+        text: root.ready && root.weeklyUsageAvailable ? Math.round(root.weeklyRemainingRatio * 100) + "%" : "-"
+        color: root.weeklyAlarming ? root.urgent : button.foreground
         font.family: root.fontFamily
         font.pixelSize: button.fontSize
       }
@@ -128,16 +142,28 @@ Panel {
           PanelHero {
             width: parent.width
             title: "LiteLLM"
-            meta: root.ready ? String(root.key.alias || "Virtual key") : "Personal virtual-key usage"
+            meta: root.ready ? "Weekly limit" : "Personal usage"
             foreground: root.foreground
             fontFamily: root.fontFamily
-            iconComponent: Component {
+            trailingControl: Component {
               Text {
-                text: "LLM"
-                color: root.foreground
+                text: root.weeklyUsageAvailable ? Math.round(root.weeklyRemainingRatio * 100) + "%" : "-"
+                color: root.weeklyAlarming ? root.urgent : root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
                 font.bold: true
+              }
+            }
+            iconComponent: Component {
+              Item {
+                width: Style.font.display
+                height: Style.font.display
+
+                Image {
+                  anchors.fill: parent
+                  source: "litellm-light.svg"
+                  fillMode: Image.PreserveAspectFit
+                }
               }
             }
           }
@@ -153,7 +179,7 @@ Panel {
               id: errorText
               anchors.fill: parent
               anchors.margins: Style.space(10)
-              text: String(root.cache.error || "Не удалось обновить LiteLLM")
+              text: String(root.cache.error || "Could not refresh LiteLLM")
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -164,19 +190,19 @@ Panel {
           PanelSeparator { visible: root.ready; foreground: root.foreground }
 
           Column {
-            visible: root.ready
+            visible: root.ready && root.weeklyUsageAvailable
             width: parent.width
             spacing: Style.space(10)
-            PanelSectionHeader { width: parent.width; text: "BUDGET"; foreground: root.foreground; fontFamily: root.fontFamily }
+            PanelSectionHeader { width: parent.width; text: "WEEKLY LIMIT"; foreground: root.foreground; fontFamily: root.fontFamily }
 
             Item {
               width: parent.width
               implicitHeight: Math.max(budgetLabel.implicitHeight, budgetValue.implicitHeight)
-              Text { id: budgetLabel; text: "Доступно"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
+              Text { id: budgetLabel; text: "Remaining"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
               Text {
                 id: budgetValue
-                text: root.key.remaining === null || root.key.remaining === undefined ? "Лимит не задан" : Model.formatMoney(root.key.remaining)
-                color: root.alarming ? root.urgent : root.foreground
+                text: Model.formatMoney(root.weeklyRemaining)
+                color: root.weeklyAlarming ? root.urgent : root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
                 anchors.right: parent.right
@@ -184,20 +210,18 @@ Panel {
               }
             }
 
-            Meter { visible: root.remainingRatio >= 0; width: parent.width; value: root.remainingRatio; alarming: root.alarming }
+            Meter { width: parent.width; value: root.weeklySpentRatio; alarming: root.weeklyAlarming }
 
             Text {
-              visible: root.key.maxBudget !== null && root.key.maxBudget !== undefined
               width: parent.width
-              text: Model.formatMoney(root.key.spend) + " из " + Model.formatMoney(root.key.maxBudget) + " потрачено"
+              text: Model.formatMoney(root.weeklySpend) + " of " + Model.formatMoney(root.weeklyLimit) + " spent"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
             }
             Text {
-              visible: text !== ""
               width: parent.width
-              text: Model.resetLabel(root.key.budgetResetAt, root.nowMs)
+              text: Model.weekResetLabel(root.nowMs)
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.caption
@@ -207,8 +231,8 @@ Panel {
               visible: Number(root.key.rpmLimit || 0) > 0 || Number(root.key.tpmLimit || 0) > 0
               width: parent.width
               spacing: Style.space(18)
-              Text { visible: Number(root.key.rpmLimit || 0) > 0; text: "RPM · " + String(root.key.rpmLimit); color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-              Text { visible: Number(root.key.tpmLimit || 0) > 0; text: "TPM · " + Model.formatTokens(root.key.tpmLimit); color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+              Text { visible: Number(root.key.rpmLimit || 0) > 0; text: "RPM: " + String(root.key.rpmLimit); color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+              Text { visible: Number(root.key.tpmLimit || 0) > 0; text: "TPM: " + Model.formatTokens(root.key.tpmLimit); color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
             }
           }
 
@@ -222,14 +246,14 @@ Panel {
             Row {
               width: parent.width
               spacing: Style.space(10)
-              Stat { width: (parent.width - parent.spacing) / 2; label: "Расход"; value: Model.formatMoney(root.cache.today.spend) }
-              Stat { width: (parent.width - parent.spacing) / 2; label: "Токены"; value: Model.formatTokens(root.cache.today.totalTokens) }
+              Stat { width: (parent.width - parent.spacing) / 2; label: "Spend"; value: Model.formatMoney(root.cache.today.spend) }
+              Stat { width: (parent.width - parent.spacing) / 2; label: "Tokens"; value: Model.formatTokens(root.cache.today.totalTokens) }
             }
             Row {
               width: parent.width
               spacing: Style.space(10)
-              Stat { width: (parent.width - parent.spacing) / 2; label: "Запросы"; value: String(root.cache.today.requests || 0) }
-              Stat { width: (parent.width - parent.spacing) / 2; label: "Успешные"; value: String(root.cache.today.successfulRequests || 0) }
+              Stat { width: (parent.width - parent.spacing) / 2; label: "Requests"; value: String(root.cache.today.requests || 0) }
+              Stat { width: (parent.width - parent.spacing) / 2; label: "Successful"; value: String(root.cache.today.successfulRequests || 0) }
             }
           }
 
@@ -270,7 +294,7 @@ Panel {
           Text {
             visible: root.cache.analyticsState !== "ready"
             width: parent.width
-            text: String(root.cache.analyticsError || "Детальная usage-статистика недоступна для этого virtual key")
+            text: String(root.cache.analyticsError || "Detailed usage statistics are unavailable for this virtual key")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -279,7 +303,7 @@ Panel {
 
           Text {
             width: parent.width
-            text: root.service && root.service.syncing ? "обновление…" : Model.staleLabel(root.cache, root.nowMs)
+            text: root.service && root.service.syncing ? "Refreshing..." : Model.staleLabel(root.cache, root.nowMs)
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.caption
@@ -355,6 +379,6 @@ Panel {
     Text { id: modelName; text: modelRow.row ? String(modelRow.row.name || "Unknown") : ""; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight; anchors.left: parent.left; anchors.leftMargin: Style.space(8); anchors.right: modelValue.left; anchors.rightMargin: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
     Text { id: modelValue; text: modelRow.row ? Model.formatMoney(modelRow.row.spend) : ""; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall; font.bold: true; anchors.right: parent.right; anchors.rightMargin: Style.space(8); anchors.verticalCenter: parent.verticalCenter }
     MouseArea { id: modelHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
-    PanelToolTip { visible: modelHover.containsMouse; text: modelRow.row ? Model.formatTokens(modelRow.row.totalTokens) + " токенов · " + String(modelRow.row.requests || 0) + " запросов" : ""; fontFamily: root.fontFamily }
+    PanelToolTip { visible: modelHover.containsMouse; text: modelRow.row ? Model.formatTokens(modelRow.row.totalTokens) + " tokens, " + String(modelRow.row.requests || 0) + " requests" : ""; fontFamily: root.fontFamily }
   }
 }

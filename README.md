@@ -1,13 +1,16 @@
 # LiteLLM for the Omarchy bar
 
-Personal LiteLLM virtual-key budget and usage dashboard for the Omarchy shell.
-The bar shows the remaining budget percentage. Its panel shows the key budget,
-the reset time, rate limits, today's usage, the last 30 days, and top models.
+Personal LiteLLM usage dashboard for the Omarchy shell. The bar shows the
+percentage remaining from a configurable weekly spending limit. Its panel shows
+the weekly spend meter, the Monday-to-Sunday reset, today's usage, the last 30
+days, and top models.
 
 The plugin targets LiteLLM Proxy `1.86.1` and uses its documented API:
 
 - `GET /key/info` for the virtual-key budget and limits;
-- `GET /user/daily/activity/aggregated` for personal daily aggregates.
+- `GET /user/daily/activity` for personal daily aggregates. The paginated
+  route is available to the virtual key, unlike the admin-only aggregated route
+  in LiteLLM Proxy `1.86.1`.
 
 ## Install
 
@@ -70,16 +73,16 @@ secret-free aggregate cache at `~/.local/state/omarchy/litellm/data.json`.
 - `j`/`k`: scroll the dashboard.
 - `Esc`: close it.
 
-The widget refreshes every five minutes by default. Change it through the
+The widget refreshes every five minutes by default. The weekly spending limit
+defaults to `$40` and resets every Monday. Change either value through the
 Omarchy plugin settings, or edit the widget entry in `shell.json`:
 
 ```json
-{ "id": "gshulga.litellm", "refreshIntervalSec": 300 }
+{ "id": "gshulga.litellm", "refreshIntervalSec": 300, "weeklyLimitUsd": 40 }
 ```
 
-If the virtual key can read `/key/info` but cannot read user activity, the
-budget meter remains available and the panel explains that analytics access is
-missing. This keeps the plugin usable with minimally privileged virtual keys.
+The weekly meter requires user-activity access. If the virtual key cannot read
+that endpoint, the panel explains that detailed analytics are unavailable.
 
 ## Development
 

@@ -34,6 +34,7 @@ KEY_CACHE = RUNTIME_DIR / "virtual-key.json"
 KEY_LOCK = RUNTIME_DIR / "virtual-key.lock"
 BWS_ATTEMPTS = 3
 TIMEOUT_SECONDS = 20
+ANALYTICS_PATH = "/user/daily/activity"
 
 
 class SyncError(RuntimeError):
@@ -48,7 +49,7 @@ class BudgetExceededError(SyncError):
     """LiteLLM rejected every route because the virtual-key budget is spent."""
 
     def __init__(self, spend, max_budget):
-        super().__init__("бюджет virtual key исчерпан")
+        super().__init__("virtual-key budget is exhausted")
         self.spend = spend
         self.max_budget = max_budget
 
@@ -61,6 +62,8 @@ def empty_cache():
         "key": {},
         "today": empty_metrics(),
         "month": empty_metrics(),
+        "week": empty_metrics(),
+        "weekStart": "",
         "days": [],
         "models": [],
         "analyticsState": "unavailable",
@@ -129,7 +132,7 @@ def read_bws_environment():
         except OSError:
             continue
         if mode & 0o077:
-            raise SyncError("BWS env-файл должен иметь права 600")
+            raise SyncError("BWS environment file must have mode 600")
         try:
             lines = env_file.read_text(encoding="utf-8").splitlines()
         except OSError:
@@ -142,16 +145,16 @@ def read_bws_environment():
         if os.environ.get(key):
             values[key] = os.environ[key]
     if not values.get("BWS_ACCESS_TOKEN"):
-        raise SyncError("не настроен BWS_ACCESS_TOKEN; создайте ~/.config/omarchy/litellm.env")
+        raise SyncError("BWS_ACCESS_TOKEN is not configured; create ~/.config/omarchy/litellm.env")
     if values.get("BWS_SERVER_URL") and not values["BWS_SERVER_URL"].startswith("https://"):
-        raise SyncError("BWS_SERVER_URL должен использовать HTTPS")
+        raise SyncError("BWS_SERVER_URL must use HTTPS")
     return values
 
 
 def bws_binary():
     path = shutil.which("bws") or str(HOME / ".local/bin/bws")
     if not Path(path).is_file() or not os.access(path, os.X_OK):
-        raise SyncError("Bitwarden Secrets CLI не найден")
+        raise SyncError("Bitwarden Secrets CLI was not found")
     return path
 
 
@@ -159,26 +162,26 @@ def command_json(args, env):
     try:
         result = subprocess.run(args, env=env, capture_output=True, text=True, check=False, timeout=TIMEOUT_SECONDS)
     except (OSError, subprocess.TimeoutExpired) as exc:
-        raise SyncError("Bitwarden Secrets CLI не ответил") from exc
+        raise SyncError("Bitwarden Secrets CLI did not respond") from exc
     if result.returncode != 0:
-        raise SyncError("Bitwarden Secrets CLI завершился с ошибкой")
+        raise SyncError("Bitwarden Secrets CLI failed")
     try:
         return json.loads(result.stdout)
     except json.JSONDecodeError as exc:
-        raise SyncError("Bitwarden Secrets CLI вернул неожиданный ответ") from exc
+        raise SyncError("Bitwarden Secrets CLI returned an unexpected response") from exc
 
 
 def runtime_dir():
     try:
         info = RUNTIME_ROOT.stat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-            raise SyncError("небезопасный пользовательский runtime-каталог")
+            raise SyncError("unsafe user runtime directory")
         RUNTIME_DIR.mkdir(mode=0o700, exist_ok=True)
         info = RUNTIME_DIR.lstat()
     except OSError as exc:
-        raise SyncError("не удалось создать runtime-кэш LiteLLM") from exc
+        raise SyncError("could not create the LiteLLM runtime cache") from exc
     if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
-        raise SyncError("небезопасный runtime-кэш LiteLLM")
+        raise SyncError("unsafe LiteLLM runtime cache")
     os.chmod(RUNTIME_DIR, 0o700)
 
 
@@ -187,11 +190,11 @@ def open_key_lock():
     try:
         fd = os.open(KEY_LOCK, os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError as exc:
-        raise SyncError("не удалось заблокировать runtime-кэш LiteLLM") from exc
+        raise SyncError("could not lock the LiteLLM runtime cache") from exc
     info = os.fstat(fd)
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
         os.close(fd)
-        raise SyncError("небезопасная блокировка runtime-кэша LiteLLM")
+        raise SyncError("unsafe LiteLLM runtime cache lock")
     os.fchmod(fd, 0o600)
     return fd
 
@@ -202,16 +205,16 @@ def cached_key(secret_key):
     except FileNotFoundError:
         return ""
     except OSError as exc:
-        raise SyncError("не удалось прочитать runtime-кэш LiteLLM") from exc
+        raise SyncError("could not read the LiteLLM runtime cache") from exc
     try:
         info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
-            raise SyncError("небезопасные права runtime-кэша LiteLLM")
+            raise SyncError("unsafe LiteLLM runtime cache permissions")
         with os.fdopen(fd, encoding="utf-8") as handle:
             fd = -1
             data = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
-        raise SyncError("runtime-кэш LiteLLM повреждён") from exc
+        raise SyncError("LiteLLM runtime cache is corrupt") from exc
     finally:
         if fd >= 0:
             os.close(fd)
@@ -257,18 +260,18 @@ def fetch_key(secret_key):
                 entries = listed.get("data", listed) if isinstance(listed, dict) else listed
                 match = next((item for item in entries if item.get("key") == secret_key), None)
                 if not match or not match.get("id"):
-                    raise SyncError("секрет %s не найден в Bitwarden" % secret_key)
+                    raise SyncError("secret %s was not found in Bitwarden" % secret_key)
                 secret_id = str(match["id"])
             secret = command_json([bws_binary(), "secret", "get", secret_id], env)
             value = str(secret.get("value", "")).strip() if isinstance(secret, dict) else ""
             if not value:
-                raise SyncError("Bitwarden вернул пустой virtual key LiteLLM")
+                raise SyncError("Bitwarden returned an empty LiteLLM virtual key")
             return value
         except SyncError:
             if attempt + 1 == BWS_ATTEMPTS:
                 raise
             time.sleep(0.2 * (2 ** attempt))
-    raise SyncError("не удалось получить virtual key LiteLLM")
+    raise SyncError("could not retrieve the LiteLLM virtual key")
 
 
 def virtual_key(secret_key):
@@ -293,10 +296,10 @@ def load_config():
     config = read_json(CONFIG, {})
     base_url = str(config.get("baseUrl", "")).rstrip("/")
     if not base_url.startswith("https://") or any(char.isspace() for char in base_url):
-        raise SyncError("в ~/.config/omarchy/litellm.json нужен HTTPS baseUrl")
+        raise SyncError("~/.config/omarchy/litellm.json requires an HTTPS baseUrl")
     parsed = urllib.parse.urlparse(base_url)
     if not parsed.hostname:
-        raise SyncError("LiteLLM baseUrl должен содержать hostname")
+        raise SyncError("LiteLLM baseUrl must include a hostname")
     return base_url, str(config.get("secretKey", "LITELLM_VIRTUAL_KEY"))
 
 
@@ -316,19 +319,19 @@ def api_get(base_url, path, key, query=None):
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
-            raise AuthenticationError("LiteLLM отклонил virtual key (%d)" % exc.code) from exc
+            raise AuthenticationError("LiteLLM rejected the virtual key (%d)" % exc.code) from exc
         if exc.code == 429:
             budget_error = budget_exceeded(exc)
             if budget_error:
                 raise budget_error from exc
             retry_after = str(exc.headers.get("Retry-After", "")).strip()
-            suffix = "; повторите через " + retry_after + " с" if retry_after.isdigit() else ""
-            raise SyncError("LiteLLM ограничил запросы (429)" + suffix) from exc
-        raise SyncError("LiteLLM вернул HTTP %d" % exc.code) from exc
+            suffix = "; retry in " + retry_after + " s" if retry_after.isdigit() else ""
+            raise SyncError("LiteLLM rate-limited the request (429)" + suffix) from exc
+        raise SyncError("LiteLLM returned HTTP %d" % exc.code) from exc
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise SyncError("LiteLLM недоступен") from exc
+        raise SyncError("LiteLLM is unavailable") from exc
     except json.JSONDecodeError as exc:
-        raise SyncError("LiteLLM вернул неожиданный ответ") from exc
+        raise SyncError("LiteLLM returned an unexpected response") from exc
 
 
 def budget_exceeded(error):
@@ -351,7 +354,7 @@ def budget_exceeded(error):
 def key_info(raw):
     info = raw.get("info", raw) if isinstance(raw, dict) else {}
     if not isinstance(info, dict):
-        raise SyncError("LiteLLM вернул неожиданные данные ключа")
+        raise SyncError("LiteLLM returned unexpected key data")
     budget = number(info.get("max_budget"), -1)
     spend = max(0, number(info.get("spend")))
     return {
@@ -393,6 +396,26 @@ def merge_metrics(target, source):
         target[field] += source.get(field, 0)
 
 
+def week_start(today):
+    return today - timedelta(days=today.weekday())
+
+
+def week_metrics(days, today):
+    start = week_start(today)
+    week_end = start + timedelta(days=6)
+    result = empty_metrics()
+    for day in days:
+        if not isinstance(day, dict):
+            continue
+        try:
+            current = date.fromisoformat(str(day.get("date") or ""))
+        except ValueError:
+            continue
+        if start <= current <= week_end:
+            merge_metrics(result, day)
+    return result
+
+
 def analytics(raw, today):
     results = raw.get("results", []) if isinstance(raw, dict) else []
     days = []
@@ -416,7 +439,7 @@ def analytics(raw, today):
     days.sort(key=lambda item: item["date"])
     model_rows = [{"name": name, **values} for name, values in models.items()]
     model_rows.sort(key=lambda item: (-item["spend"], -item["totalTokens"], item["name"]))
-    return today_metrics, month, days[-30:], model_rows[:8]
+    return today_metrics, month, week_metrics(days, date.fromisoformat(today)), days[-30:], model_rows[:8]
 
 
 def sync():
@@ -431,7 +454,7 @@ def sync():
             "syncedAt": int(time.time() * 1000),
             "key": key_info({"spend": exc.spend, "max_budget": exc.max_budget}),
             "analyticsState": "unavailable",
-            "analyticsError": "LiteLLM заблокировал virtual key после исчерпания бюджета",
+            "analyticsError": "LiteLLM blocked the virtual key because its budget is exhausted",
             "error": "",
         })
         write_cache(data)
@@ -444,20 +467,29 @@ def sync():
         info = key_info(api_get(base_url, "/key/info", key))
     today = date.today()
     data = empty_cache()
-    data.update({"state": "ready", "syncedAt": int(time.time() * 1000), "key": info, "error": ""})
+    data.update({
+        "state": "ready",
+        "syncedAt": int(time.time() * 1000),
+        "key": info,
+        "weekStart": week_start(today).isoformat(),
+        "error": "",
+    })
     try:
         query = {"start_date": (today - timedelta(days=29)).isoformat(), "end_date": today.isoformat()}
         if info["userId"]:
             query["user_id"] = info["userId"]
-        response = api_get(base_url, "/user/daily/activity/aggregated", key, query)
-        data["today"], data["month"], data["days"], data["models"] = analytics(response, today.isoformat())
+        # The aggregated route is admin-only in LiteLLM 1.86.1. The paginated
+        # route returns the same daily response shape and is user-accessible.
+        query["page_size"] = 30
+        response = api_get(base_url, ANALYTICS_PATH, key, query)
+        data["today"], data["month"], data["week"], data["days"], data["models"] = analytics(response, today.isoformat())
         data["analyticsState"] = "ready"
     except AuthenticationError:
         clear_cached_key()
         key = virtual_key(secret_key)
         try:
-            response = api_get(base_url, "/user/daily/activity/aggregated", key, query)
-            data["today"], data["month"], data["days"], data["models"] = analytics(response, today.isoformat())
+            response = api_get(base_url, ANALYTICS_PATH, key, query)
+            data["today"], data["month"], data["week"], data["days"], data["models"] = analytics(response, today.isoformat())
             data["analyticsState"] = "ready"
         except SyncError as exc:
             data["analyticsState"] = "unavailable"
