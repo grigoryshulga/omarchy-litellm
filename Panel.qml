@@ -142,7 +142,7 @@ Panel {
           PanelHero {
             width: parent.width
             title: "LiteLLM"
-            meta: root.ready ? "Weekly limit" : "Personal usage"
+            meta: root.ready ? "Corporate Model Access" : "Personal usage"
             foreground: root.foreground
             fontFamily: root.fontFamily
             trailingControl: Component {
@@ -193,12 +193,12 @@ Panel {
             visible: root.ready && root.weeklyUsageAvailable
             width: parent.width
             spacing: Style.space(10)
-            PanelSectionHeader { width: parent.width; text: "WEEKLY LIMIT"; foreground: root.foreground; fontFamily: root.fontFamily }
+            PanelSectionHeader { width: parent.width; text: "LIMITS"; foreground: root.foreground; fontFamily: root.fontFamily }
 
             Item {
               width: parent.width
               implicitHeight: Math.max(budgetLabel.implicitHeight, budgetValue.implicitHeight)
-              Text { id: budgetLabel; text: "Remaining"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
+              Text { id: budgetLabel; text: "Weekly"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
               Text {
                 id: budgetValue
                 text: Model.formatMoney(root.weeklyRemaining)
@@ -212,19 +212,30 @@ Panel {
 
             Meter { width: parent.width; value: root.weeklySpentRatio; alarming: root.weeklyAlarming }
 
-            Text {
+            Item {
               width: parent.width
-              text: Model.formatMoney(root.weeklySpend) + " of " + Model.formatMoney(root.weeklyLimit) + " spent"
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
-            }
-            Text {
-              width: parent.width
-              text: Model.weekResetLabel(root.nowMs)
-              color: root.dim
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.caption
+              implicitHeight: Math.max(resetText.implicitHeight, spentText.implicitHeight)
+              Text {
+                id: resetText
+                anchors.left: parent.left
+                anchors.right: spentText.left
+                anchors.rightMargin: Style.space(12)
+                anchors.verticalCenter: parent.verticalCenter
+                text: Model.weekResetLabel(root.nowMs)
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                elide: Text.ElideRight
+              }
+              Text {
+                id: spentText
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                text: Model.formatMoney(root.weeklySpend) + " of " + Model.formatMoney(root.weeklyLimit) + " spent"
+                color: root.dim
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
             }
 
             Row {
