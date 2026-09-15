@@ -52,7 +52,11 @@ Panel {
   property double nowMs: Date.now()
 
   function refresh() { if (service) service.refresh() }
-  onOpenedChanged: if (opened) nowMs = Date.now()
+  onOpenedChanged: {
+    if (!opened) return
+    nowMs = Date.now()
+    refresh()
+  }
   function clamp(value, low, high) { return Math.max(low, Math.min(high, value)) }
   function alpha(color, opacity) { return Qt.rgba(color.r, color.g, color.b, opacity) }
   function nextCaption() {
