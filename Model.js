@@ -97,11 +97,14 @@ function weekStartDate(now) {
   return current.getFullYear() + "-" + String(current.getMonth() + 1).padStart(2, "0") + "-" + String(current.getDate()).padStart(2, "0")
 }
 
+function todayDate(now) {
+  var current = new Date(number(now, Date.now()))
+  return current.getFullYear() + "-" + String(current.getMonth() + 1).padStart(2, "0") + "-" + String(current.getDate()).padStart(2, "0")
+}
+
 function dayLabel(value, now) {
   var date = String(value || "")
-  var current = new Date(number(now, Date.now()))
-  var today = current.getFullYear() + "-" + String(current.getMonth() + 1).padStart(2, "0") + "-" + String(current.getDate()).padStart(2, "0")
-  if (date === today) return "Today"
+  if (date === todayDate(now)) return "Today"
   var parsed = new Date(date + "T00:00:00")
   if (isNaN(parsed.getTime())) return date
   return ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][parsed.getDay()]

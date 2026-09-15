@@ -22,8 +22,9 @@ Panel {
   readonly property color track: Style.selectedFillFor(foreground, Color.accent)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property bool ready: cache.state === "ready" || cache.state === "error"
-  readonly property bool weeklyUsageAvailable: cache.analyticsState === "ready"
-  readonly property bool weeklyCacheCurrent: String(cache.weekStart || "") === Model.weekStartDate(nowMs)
+  readonly property bool analyticsCurrent: String(cache.analyticsDate || "") === Model.todayDate(nowMs)
+  readonly property bool analyticsAvailable: cache.analyticsState === "ready" && analyticsCurrent
+  readonly property bool weeklyCacheCurrent: analyticsCurrent && String(cache.weekStart || "") === Model.weekStartDate(nowMs)
   readonly property var actionCaptions: [
     "Spending corpo money",
     "tokenmaxxing for free",
@@ -39,21 +40,25 @@ Panel {
   property int captionIndex: 0
   readonly property string heroCaption: actionCaptions[captionIndex % actionCaptions.length]
   readonly property real dailyLimit: {
-    var configured = Number(setting("dailyLimitUsd", 50))
-    return isFinite(configured) && configured > 0 ? configured : 50
+    var configured = Number(setting("dailyLimitUsd", -1))
+    if (isFinite(configured) && configured > 0) return configured
+    // Preserve an explicitly configured weekly cap while migrating to the
+    // daily-budget setting.
+    var legacyWeekly = Number(setting("weeklyLimitUsd", -1))
+    return isFinite(legacyWeekly) && legacyWeekly > 0 ? legacyWeekly / 7 : 50
   }
   readonly property real weeklyLimit: {
     return root.dailyLimit * 7
   }
-  readonly property real dailySpend: weeklyUsageAvailable ? Math.max(0, Model.number(cache.today ? cache.today.spend : 0)) : 0
-  readonly property real dailySpentRatio: weeklyUsageAvailable ? Math.min(1, dailySpend / dailyLimit) : -1
+  readonly property real dailySpend: analyticsAvailable ? Math.max(0, Model.number(cache.today ? cache.today.spend : 0)) : 0
+  readonly property real dailySpentRatio: analyticsAvailable ? Math.min(1, dailySpend / dailyLimit) : -1
   readonly property real dailyRemaining: Math.max(0, dailyLimit - dailySpend)
-  readonly property real dailyRemainingRatio: weeklyUsageAvailable ? Math.max(0, 1 - dailySpend / dailyLimit) : -1
+  readonly property real dailyRemainingRatio: analyticsAvailable ? Math.max(0, 1 - dailySpend / dailyLimit) : -1
   readonly property bool dailyAlarming: dailyRemainingRatio >= 0 && dailyRemainingRatio < 0.1
   readonly property real weeklySpend: weeklyCacheCurrent ? Math.max(0, Model.number(cache.week ? cache.week.spend : 0)) : 0
-  readonly property real weeklySpentRatio: weeklyUsageAvailable ? Math.min(1, weeklySpend / weeklyLimit) : -1
+  readonly property real weeklySpentRatio: analyticsAvailable ? Math.min(1, weeklySpend / weeklyLimit) : -1
   readonly property real weeklyRemaining: Math.max(0, weeklyLimit - weeklySpend)
-  readonly property real weeklyRemainingRatio: weeklyUsageAvailable ? Math.max(0, 1 - weeklySpend / weeklyLimit) : -1
+  readonly property real weeklyRemainingRatio: analyticsAvailable ? Math.max(0, 1 - weeklySpend / weeklyLimit) : -1
   readonly property bool weeklyAlarming: weeklyRemainingRatio >= 0 && weeklyRemainingRatio < 0.1
   property double nowMs: Date.now()
 
@@ -127,7 +132,7 @@ Panel {
     hasVisualContent: true
     fixedWidth: icon.implicitWidth + percentage.implicitWidth + Style.space(13)
     dimmed: !root.ready
-    tooltipText: !root.ready ? "LiteLLM - setup required" : !root.weeklyUsageAvailable
+    tooltipText: !root.ready ? "LiteLLM - setup required" : !root.analyticsAvailable
       ? "LiteLLM - usage unavailable" : "LiteLLM - " + Math.round(root.weeklyRemainingRatio * 100) + "% of weekly limit remaining"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.refresh()
@@ -152,7 +157,7 @@ Panel {
       }
       Text {
         id: percentage
-        text: root.ready && root.weeklyUsageAvailable ? Math.round(root.weeklyRemainingRatio * 100) + "%" : "-"
+        text: root.ready && root.analyticsAvailable ? Math.round(root.weeklyRemainingRatio * 100) + "%" : "-"
         color: root.weeklyAlarming ? root.urgent : button.foreground
         font.family: root.fontFamily
         font.pixelSize: button.fontSize
@@ -206,7 +211,7 @@ Panel {
             fontFamily: root.fontFamily
             trailingControl: Component {
               Text {
-                text: root.weeklyUsageAvailable ? Math.round(root.weeklyRemainingRatio * 100) + "%" : "-"
+                text: root.analyticsAvailable ? Math.round(root.weeklyRemainingRatio * 100) + "%" : "-"
                 color: root.weeklyAlarming ? root.urgent : root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
@@ -249,7 +254,7 @@ Panel {
           PanelSeparator { visible: root.ready; foreground: root.foreground }
 
           Column {
-            visible: root.ready && root.weeklyUsageAvailable
+            visible: root.ready && root.analyticsAvailable
             width: parent.width
             spacing: Style.space(10)
             PanelSectionHeader { width: parent.width; text: "LIMITS"; foreground: root.foreground; fontFamily: root.fontFamily }
@@ -323,10 +328,10 @@ Panel {
             }
           }
 
-          PanelSeparator { visible: root.cache.analyticsState === "ready"; foreground: root.foreground }
+          PanelSeparator { visible: root.analyticsAvailable; foreground: root.foreground }
 
           Column {
-            visible: root.cache.analyticsState === "ready"
+            visible: root.analyticsAvailable
             width: parent.width
             spacing: Style.space(9)
             PanelSectionHeader { width: parent.width; text: "TODAY"; foreground: root.foreground; fontFamily: root.fontFamily }
@@ -344,11 +349,11 @@ Panel {
             }
           }
 
-          PanelSeparator { visible: root.cache.analyticsState === "ready" && root.cache.days.length > 0; foreground: root.foreground }
+          PanelSeparator { visible: root.analyticsAvailable && root.cache.days.length > 0; foreground: root.foreground }
 
           Column {
             id: daySection
-            visible: root.cache.analyticsState === "ready" && root.cache.days.length > 0
+            visible: root.analyticsAvailable && root.cache.days.length > 0
             width: parent.width
             spacing: Style.space(8)
             readonly property real peak: Model.dayPeak(root.cache.days)
@@ -359,11 +364,11 @@ Panel {
             }
           }
 
-          PanelSeparator { visible: root.cache.analyticsState === "ready" && root.cache.models.length > 0; foreground: root.foreground }
+          PanelSeparator { visible: root.analyticsAvailable && root.cache.models.length > 0; foreground: root.foreground }
 
           Column {
             id: modelSection
-            visible: root.cache.analyticsState === "ready" && root.cache.models.length > 0
+            visible: root.analyticsAvailable && root.cache.models.length > 0
             width: parent.width
             spacing: Style.space(8)
             PanelSectionHeader { width: parent.width; text: "SPEND BY MODEL"; foreground: root.foreground; fontFamily: root.fontFamily }

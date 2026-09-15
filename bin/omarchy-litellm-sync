@@ -64,6 +64,7 @@ def empty_cache():
         "month": empty_metrics(),
         "week": empty_metrics(),
         "weekStart": "",
+        "analyticsDate": "",
         "days": [],
         "models": [],
         "analyticsState": "unavailable",
@@ -472,6 +473,7 @@ def sync():
         "syncedAt": int(time.time() * 1000),
         "key": info,
         "weekStart": week_start(today).isoformat(),
+        "analyticsDate": today.isoformat(),
         "error": "",
     })
     try:

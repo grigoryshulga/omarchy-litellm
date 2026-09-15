@@ -82,6 +82,9 @@ plugin settings, or edit the widget entry in `shell.json`:
 { "id": "gshulga.litellm", "refreshIntervalSec": 300, "dailyLimitUsd": 50 }
 ```
 
+Existing inline `weeklyLimitUsd` settings are treated as their equivalent
+daily budget during migration.
+
 The weekly meter requires user-activity access. If the virtual key cannot read
 that endpoint, the panel explains that detailed analytics are unavailable.
 
