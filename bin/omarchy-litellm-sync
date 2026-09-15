@@ -62,8 +62,6 @@ def empty_cache():
         "key": {},
         "today": empty_metrics(),
         "month": empty_metrics(),
-        "week": empty_metrics(),
-        "weekStart": "",
         "analyticsDate": "",
         "days": [],
         "models": [],
@@ -397,26 +395,6 @@ def merge_metrics(target, source):
         target[field] += source.get(field, 0)
 
 
-def week_start(today):
-    return today - timedelta(days=today.weekday())
-
-
-def week_metrics(days, today):
-    start = week_start(today)
-    week_end = start + timedelta(days=6)
-    result = empty_metrics()
-    for day in days:
-        if not isinstance(day, dict):
-            continue
-        try:
-            current = date.fromisoformat(str(day.get("date") or ""))
-        except ValueError:
-            continue
-        if start <= current <= week_end:
-            merge_metrics(result, day)
-    return result
-
-
 def analytics(raw, today):
     results = raw.get("results", []) if isinstance(raw, dict) else []
     days = []
@@ -440,7 +418,7 @@ def analytics(raw, today):
     days.sort(key=lambda item: item["date"])
     model_rows = [{"name": name, **values} for name, values in models.items()]
     model_rows.sort(key=lambda item: (-item["spend"], -item["totalTokens"], item["name"]))
-    return today_metrics, month, week_metrics(days, date.fromisoformat(today)), days[-30:], model_rows[:8]
+    return today_metrics, month, days[-30:], model_rows[:8]
 
 
 def sync():
@@ -472,7 +450,6 @@ def sync():
         "state": "ready",
         "syncedAt": int(time.time() * 1000),
         "key": info,
-        "weekStart": week_start(today).isoformat(),
         "analyticsDate": today.isoformat(),
         "error": "",
     })
@@ -484,14 +461,14 @@ def sync():
         # route returns the same daily response shape and is user-accessible.
         query["page_size"] = 30
         response = api_get(base_url, ANALYTICS_PATH, key, query)
-        data["today"], data["month"], data["week"], data["days"], data["models"] = analytics(response, today.isoformat())
+        data["today"], data["month"], data["days"], data["models"] = analytics(response, today.isoformat())
         data["analyticsState"] = "ready"
     except AuthenticationError:
         clear_cached_key()
         key = virtual_key(secret_key)
         try:
             response = api_get(base_url, ANALYTICS_PATH, key, query)
-            data["today"], data["month"], data["week"], data["days"], data["models"] = analytics(response, today.isoformat())
+            data["today"], data["month"], data["days"], data["models"] = analytics(response, today.isoformat())
             data["analyticsState"] = "ready"
         except SyncError as exc:
             data["analyticsState"] = "unavailable"

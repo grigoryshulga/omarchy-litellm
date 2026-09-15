@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "gshulga",
   "license": "MIT",
-  "description": "Personal LiteLLM daily-budget spending and usage dashboard backed by Bitwarden Secrets Manager.",
+  "description": "Personal LiteLLM daily spending and usage dashboard backed by Bitwarden Secrets Manager.",
   "kinds": ["bar-widget", "service"],
   "entryPoints": {
     "barWidget": "Panel.qml",
@@ -13,7 +13,7 @@
   },
   "barWidget": {
     "displayName": "LiteLLM",
-    "description": "Daily budget, weekly spending limit, daily activity, and model usage.",
+    "description": "Daily spending limit, daily activity, and model usage.",
     "category": "AI",
     "aliases": ["litellm", "llm-usage", "llm-budget"],
     "allowMultiple": false,
@@ -36,7 +36,7 @@
         "key": "dailyLimitUsd",
         "type": "integer",
         "label": "Daily spending budget (USD)",
-        "description": "The weekly spending cap is calculated as seven daily budgets.",
+        "description": "Daily spending cap used by the meter and remaining balance.",
         "min": 1,
         "max": 10000,
         "step": 1,

@@ -4,7 +4,6 @@ import io
 import json
 import unittest
 import urllib.error
-from datetime import date
 from pathlib import Path
 
 
@@ -46,38 +45,24 @@ class AnalyticsTests(unittest.TestCase):
                 {"date": "2026-08-02", "metrics": {"spend": 2, "total_tokens": 200, "api_requests": 3}, "breakdown": {"models": {"a": {"metrics": {"spend": 2, "total_tokens": 200}}}}},
             ]
         }
-        today, month, week, days, models = sync.analytics(raw, "2026-08-02")
+        today, month, days, models = sync.analytics(raw, "2026-08-02")
         self.assertEqual(today["spend"], 2)
         self.assertEqual(month["spend"], 3.5)
         self.assertEqual(month["requests"], 5)
-        self.assertEqual(week["spend"], 3.5)
         self.assertEqual(len(days), 2)
         self.assertEqual(models[0]["name"], "a")
         self.assertEqual(models[0]["spend"], 3)
 
     def test_ignores_malformed_values(self):
-        today, month, week, days, models = sync.analytics({"results": [{"date": "2026-08-02", "metrics": {"spend": "bad"}}]}, "2026-08-02")
+        today, month, days, models = sync.analytics({"results": [{"date": "2026-08-02", "metrics": {"spend": "bad"}}]}, "2026-08-02")
         self.assertEqual(today["spend"], 0)
         self.assertEqual(month["totalTokens"], 0)
-        self.assertEqual(week["spend"], 0)
         self.assertEqual(len(days), 1)
         self.assertEqual(models, [])
 
-    def test_week_metrics_start_on_monday(self):
-        days = [
-            {"date": "2026-08-02", "spend": 18, "requests": 2},
-            {"date": "2026-08-03", "spend": 3, "requests": 1},
-            {"date": "2026-08-09", "spend": 7, "requests": 4},
-        ]
-
-        result = sync.week_metrics(days, date(2026, 8, 3))
-
-        self.assertEqual(result["spend"], 10)
-        self.assertEqual(result["requests"], 5)
-
-    def test_week_start_resets_on_monday(self):
-        self.assertEqual(sync.week_start(date(2026, 8, 2)), date(2026, 7, 27))
-        self.assertEqual(sync.week_start(date(2026, 8, 3)), date(2026, 8, 3))
+    def test_cache_has_no_period_budget(self):
+        self.assertNotIn("week", sync.empty_cache())
+        self.assertNotIn("weekStart", sync.empty_cache())
 
 
 class BudgetExceededTests(unittest.TestCase):

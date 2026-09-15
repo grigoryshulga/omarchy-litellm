@@ -24,7 +24,6 @@ Panel {
   readonly property bool ready: cache.state === "ready" || cache.state === "error"
   readonly property bool analyticsCurrent: String(cache.analyticsDate || "") === Model.todayDate(nowMs)
   readonly property bool analyticsAvailable: cache.analyticsState === "ready" && analyticsCurrent
-  readonly property bool weeklyCacheCurrent: analyticsCurrent && String(cache.weekStart || "") === Model.weekStartDate(nowMs)
   readonly property var actionCaptions: [
     "Spending corpo money",
     "tokenmaxxing for free",
@@ -40,26 +39,15 @@ Panel {
   property int captionIndex: 0
   readonly property string heroCaption: actionCaptions[captionIndex % actionCaptions.length]
   readonly property real dailyLimit: {
-    var configured = Number(setting("dailyLimitUsd", -1))
-    if (isFinite(configured) && configured > 0) return configured
-    // Preserve an explicitly configured weekly cap while migrating to the
-    // daily-budget setting.
-    var legacyWeekly = Number(setting("weeklyLimitUsd", -1))
-    return isFinite(legacyWeekly) && legacyWeekly > 0 ? legacyWeekly / 7 : 50
-  }
-  readonly property real weeklyLimit: {
-    return root.dailyLimit * 7
+    var configured = Number(setting("dailyLimitUsd", 50))
+    return isFinite(configured) && configured > 0 ? configured : 50
   }
   readonly property real dailySpend: analyticsAvailable ? Math.max(0, Model.number(cache.today ? cache.today.spend : 0)) : 0
   readonly property real dailySpentRatio: analyticsAvailable ? Math.min(1, dailySpend / dailyLimit) : -1
   readonly property real dailyRemaining: Math.max(0, dailyLimit - dailySpend)
   readonly property real dailyRemainingRatio: analyticsAvailable ? Math.max(0, 1 - dailySpend / dailyLimit) : -1
+  readonly property int dailyRemainingPercent: analyticsAvailable ? Math.round(dailyRemainingRatio * 100) : -1
   readonly property bool dailyAlarming: dailyRemainingRatio >= 0 && dailyRemainingRatio < 0.1
-  readonly property real weeklySpend: weeklyCacheCurrent ? Math.max(0, Model.number(cache.week ? cache.week.spend : 0)) : 0
-  readonly property real weeklySpentRatio: analyticsAvailable ? Math.min(1, weeklySpend / weeklyLimit) : -1
-  readonly property real weeklyRemaining: Math.max(0, weeklyLimit - weeklySpend)
-  readonly property real weeklyRemainingRatio: analyticsAvailable ? Math.max(0, 1 - weeklySpend / weeklyLimit) : -1
-  readonly property bool weeklyAlarming: weeklyRemainingRatio >= 0 && weeklyRemainingRatio < 0.1
   property double nowMs: Date.now()
 
   function refresh() { if (service) service.refresh() }
@@ -133,7 +121,7 @@ Panel {
     fixedWidth: icon.implicitWidth + percentage.implicitWidth + Style.space(13)
     dimmed: !root.ready
     tooltipText: !root.ready ? "LiteLLM - setup required" : !root.analyticsAvailable
-      ? "LiteLLM - usage unavailable" : "LiteLLM - " + Math.round(root.weeklyRemainingRatio * 100) + "% of weekly limit remaining"
+      ? "LiteLLM - usage unavailable" : "LiteLLM - " + root.dailyRemainingPercent + "% remaining today"
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.refresh()
       else root.toggle()
@@ -157,8 +145,8 @@ Panel {
       }
       Text {
         id: percentage
-        text: root.ready && root.analyticsAvailable ? Math.round(root.weeklyRemainingRatio * 100) + "%" : "-"
-        color: root.weeklyAlarming ? root.urgent : button.foreground
+        text: root.ready && root.analyticsAvailable ? root.dailyRemainingPercent + "%" : "-"
+        color: root.dailyAlarming ? root.urgent : button.foreground
         font.family: root.fontFamily
         font.pixelSize: button.fontSize
       }
@@ -211,8 +199,8 @@ Panel {
             fontFamily: root.fontFamily
             trailingControl: Component {
               Text {
-                text: root.analyticsAvailable ? Math.round(root.weeklyRemainingRatio * 100) + "%" : "-"
-                color: root.weeklyAlarming ? root.urgent : root.foreground
+                text: root.analyticsAvailable ? root.dailyRemainingPercent + "%" : "-"
+                color: root.dailyAlarming ? root.urgent : root.foreground
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
                 font.bold: true
@@ -278,23 +266,6 @@ Panel {
 
             Item {
               width: parent.width
-              implicitHeight: Math.max(weeklyBudgetLabel.implicitHeight, weeklyBudgetValue.implicitHeight)
-              Text { id: weeklyBudgetLabel; text: "Weekly"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
-              Text {
-                id: weeklyBudgetValue
-                text: Model.formatMoney(root.weeklyRemaining)
-                color: root.weeklyAlarming ? root.urgent : root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.caption
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-              }
-            }
-
-            Meter { width: parent.width; value: root.weeklySpentRatio; alarming: root.weeklyAlarming }
-
-            Item {
-              width: parent.width
               implicitHeight: Math.max(resetText.implicitHeight, spentText.implicitHeight)
               Text {
                 id: resetText
@@ -302,7 +273,7 @@ Panel {
                 anchors.right: spentText.left
                 anchors.rightMargin: Style.space(12)
                 anchors.verticalCenter: parent.verticalCenter
-                text: Model.weekResetLabel(root.nowMs)
+                text: Model.dayResetLabel(root.nowMs)
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -312,7 +283,7 @@ Panel {
                 id: spentText
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text: Model.formatMoney(root.weeklySpend) + " of " + Model.formatMoney(root.weeklyLimit) + " spent"
+                text: Model.formatMoney(root.dailySpend) + " of " + Model.formatMoney(root.dailyLimit) + " spent today"
                 color: root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.caption
@@ -384,7 +355,7 @@ Panel {
           }
 
           Text {
-            visible: root.cache.analyticsState !== "ready"
+            visible: !root.analyticsAvailable
             width: parent.width
             text: String(root.cache.analyticsError || "Detailed usage statistics are unavailable for this virtual key")
             color: root.dim

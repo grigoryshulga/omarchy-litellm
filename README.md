@@ -1,9 +1,8 @@
 # LiteLLM for the Omarchy bar
 
 Personal LiteLLM usage dashboard for the Omarchy shell. The bar shows the
-percentage remaining from a daily-budget-based weekly spending limit. Its panel
-shows daily and weekly spend meters, the Monday-to-Sunday reset, today's usage,
-the last 30 days, and top models.
+remaining percentage of the daily budget. Its panel shows the daily spend
+meter, the next daily reset, today's usage, the last 30 days, and top models.
 
 The plugin targets LiteLLM Proxy `1.86.1` and uses its documented API:
 
@@ -74,18 +73,14 @@ secret-free aggregate cache at `~/.local/state/omarchy/litellm/data.json`.
 - `Esc`: close it.
 
 The widget refreshes every five minutes by default. The daily spending budget
-defaults to `$50`; the weekly limit is calculated as seven daily budgets, or
-`$350`, and resets every Monday. Change the daily budget through the Omarchy
-plugin settings, or edit the widget entry in `shell.json`:
+defaults to `$50` and resets every day. Change it through the Omarchy plugin
+settings, or edit the widget entry in `shell.json`:
 
 ```json
 { "id": "gshulga.litellm", "refreshIntervalSec": 300, "dailyLimitUsd": 50 }
 ```
 
-Existing inline `weeklyLimitUsd` settings are treated as their equivalent
-daily budget during migration.
-
-The weekly meter requires user-activity access. If the virtual key cannot read
+The daily meter requires user-activity access. If the virtual key cannot read
 that endpoint, the panel explains that detailed analytics are unavailable.
 
 ## Development

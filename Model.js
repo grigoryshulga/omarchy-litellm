@@ -20,8 +20,6 @@ function emptyCache() {
     key: {},
     today: emptyMetrics(),
     month: emptyMetrics(),
-    week: emptyMetrics(),
-    weekStart: "",
     days: [],
     models: [],
     analyticsState: "unavailable",
@@ -55,13 +53,6 @@ function formatTokens(value) {
   return String(Math.round(count))
 }
 
-function remainingRatio(key) {
-  var rawPercentage = key ? key.remainingPercent : null
-  if (rawPercentage === null || rawPercentage === undefined) return -1
-  var percentage = number(rawPercentage, -1)
-  return percentage >= 0 ? Math.max(0, Math.min(1, percentage / 100)) : -1
-}
-
 function staleLabel(cache, now) {
   if (!cache || !cache.syncedAt) return "Not refreshed yet"
   var minutes = Math.max(0, Math.floor((number(now, Date.now()) - number(cache.syncedAt)) / 60000))
@@ -82,19 +73,10 @@ function resetLabel(value, now) {
   return "Resets in " + Math.max(1, minutes) + "m"
 }
 
-function weekResetLabel(now) {
+function dayResetLabel(now) {
   var current = new Date(number(now, Date.now()))
-  var nextMonday = new Date(current.getFullYear(), current.getMonth(), current.getDate())
-  var daysSinceMonday = (current.getDay() + 6) % 7
-  nextMonday.setDate(nextMonday.getDate() + 7 - daysSinceMonday)
-  return resetLabel(nextMonday.getTime(), now)
-}
-
-function weekStartDate(now) {
-  var current = new Date(number(now, Date.now()))
-  current.setHours(0, 0, 0, 0)
-  current.setDate(current.getDate() - (current.getDay() + 6) % 7)
-  return current.getFullYear() + "-" + String(current.getMonth() + 1).padStart(2, "0") + "-" + String(current.getDate()).padStart(2, "0")
+  var nextDay = new Date(current.getFullYear(), current.getMonth(), current.getDate() + 1)
+  return resetLabel(nextDay.getTime(), now)
 }
 
 function todayDate(now) {
