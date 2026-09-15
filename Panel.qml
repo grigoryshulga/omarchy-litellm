@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Effects
 import Quickshell
 import Quickshell.Io
 import qs.Commons
@@ -55,9 +56,7 @@ Panel {
   function clamp(value, low, high) { return Math.max(low, Math.min(high, value)) }
   function alpha(color, opacity) { return Qt.rgba(color.r, color.g, color.b, opacity) }
   function nextCaption() {
-    var next = Math.floor(Math.random() * actionCaptions.length)
-    if (actionCaptions.length > 1 && next === captionIndex) next = (next + 1) % actionCaptions.length
-    captionIndex = next
+    captionIndex = (captionIndex + 1) % actionCaptions.length
   }
 
   implicitWidth: button.implicitWidth
@@ -137,11 +136,7 @@ Panel {
         width: implicitWidth
         height: implicitHeight
 
-        Image {
-          anchors.fill: parent
-          source: "litellm-light.svg"
-          fillMode: Image.PreserveAspectFit
-        }
+        Logo { anchors.fill: parent }
       }
       Text {
         id: percentage
@@ -207,16 +202,7 @@ Panel {
               }
             }
             iconComponent: Component {
-              Item {
-                width: Style.font.display
-                height: Style.font.display
-
-                Image {
-                  anchors.fill: parent
-                  source: "litellm-light.svg"
-                  fillMode: Image.PreserveAspectFit
-                }
-              }
+              Logo { width: Style.font.display; height: Style.font.display }
             }
           }
 
@@ -390,6 +376,23 @@ Panel {
       width: meterTrack.width * root.clamp(value, 0, 1)
       color: alarming ? root.urgent : root.foreground
       Behavior on width { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+    }
+  }
+
+  component Logo: Item {
+    Image {
+      id: source
+      anchors.fill: parent
+      source: "litellm-light.svg"
+      fillMode: Image.PreserveAspectFit
+      visible: false
+      layer.enabled: true
+    }
+    MultiEffect {
+      anchors.fill: source
+      source: source
+      colorization: 1.0
+      colorizationColor: root.foreground
     }
   }
 
