@@ -24,10 +24,32 @@ Panel {
   readonly property bool ready: cache.state === "ready" || cache.state === "error"
   readonly property bool weeklyUsageAvailable: cache.analyticsState === "ready"
   readonly property bool weeklyCacheCurrent: String(cache.weekStart || "") === Model.weekStartDate(nowMs)
-  readonly property real weeklyLimit: {
-    var configured = Number(setting("weeklyLimitUsd", 40))
-    return isFinite(configured) && configured > 0 ? configured : 40
+  readonly property var actionCaptions: [
+    "Spending corpo money",
+    "tokenmaxxing for free",
+    "Burning the company tab",
+    "Printing shareholder value",
+    "Making tokens go brrr",
+    "Maxxing the context window",
+    "Putting the cloud to work",
+    "Turning cash into tokens",
+    "Summoning more compute",
+    "Expensing the inference"
+  ]
+  property int captionIndex: 0
+  readonly property string heroCaption: actionCaptions[captionIndex % actionCaptions.length]
+  readonly property real dailyLimit: {
+    var configured = Number(setting("dailyLimitUsd", 50))
+    return isFinite(configured) && configured > 0 ? configured : 50
   }
+  readonly property real weeklyLimit: {
+    return root.dailyLimit * 7
+  }
+  readonly property real dailySpend: weeklyUsageAvailable ? Math.max(0, Model.number(cache.today ? cache.today.spend : 0)) : 0
+  readonly property real dailySpentRatio: weeklyUsageAvailable ? Math.min(1, dailySpend / dailyLimit) : -1
+  readonly property real dailyRemaining: Math.max(0, dailyLimit - dailySpend)
+  readonly property real dailyRemainingRatio: weeklyUsageAvailable ? Math.max(0, 1 - dailySpend / dailyLimit) : -1
+  readonly property bool dailyAlarming: dailyRemainingRatio >= 0 && dailyRemainingRatio < 0.1
   readonly property real weeklySpend: weeklyCacheCurrent ? Math.max(0, Model.number(cache.week ? cache.week.spend : 0)) : 0
   readonly property real weeklySpentRatio: weeklyUsageAvailable ? Math.min(1, weeklySpend / weeklyLimit) : -1
   readonly property real weeklyRemaining: Math.max(0, weeklyLimit - weeklySpend)
@@ -39,6 +61,11 @@ Panel {
   onOpenedChanged: if (opened) nowMs = Date.now()
   function clamp(value, low, high) { return Math.max(low, Math.min(high, value)) }
   function alpha(color, opacity) { return Qt.rgba(color.r, color.g, color.b, opacity) }
+  function nextCaption() {
+    var next = Math.floor(Math.random() * actionCaptions.length)
+    if (actionCaptions.length > 1 && next === captionIndex) next = (next + 1) % actionCaptions.length
+    captionIndex = next
+  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
@@ -58,6 +85,37 @@ Panel {
     running: true
     repeat: true
     onTriggered: root.nowMs = Date.now()
+  }
+
+  Timer {
+    id: captionTimer
+    interval: 2800
+    running: root.opened && root.ready
+    repeat: true
+    onTriggered: captionSwap.restart()
+  }
+
+  SequentialAnimation {
+    id: captionSwap
+    PropertyAnimation {
+      target: hero; property: "metaOpacity"
+      to: 0.0; duration: 180; easing.type: Easing.OutQuad
+    }
+    ScriptAction { script: root.nextCaption() }
+    PropertyAnimation {
+      target: hero; property: "metaOpacity"
+      to: 1.0; duration: 260; easing.type: Easing.InQuad
+    }
+  }
+
+  Connections {
+    target: root
+    function onReadyChanged() {
+      if (!root.ready) {
+        captionSwap.stop()
+        hero.metaOpacity = 1.0
+      }
+    }
   }
 
   WidgetButton {
@@ -140,9 +198,10 @@ Panel {
           spacing: Style.space(12)
 
           PanelHero {
+            id: hero
             width: parent.width
             title: "LiteLLM"
-            meta: root.ready ? "Corporate Model Access" : "Personal usage"
+            meta: root.ready ? root.heroCaption : "Personal usage"
             foreground: root.foreground
             fontFamily: root.fontFamily
             trailingControl: Component {
@@ -198,9 +257,26 @@ Panel {
             Item {
               width: parent.width
               implicitHeight: Math.max(budgetLabel.implicitHeight, budgetValue.implicitHeight)
-              Text { id: budgetLabel; text: "Weekly"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
+              Text { id: budgetLabel; text: "Daily"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
               Text {
                 id: budgetValue
+                text: Model.formatMoney(root.dailyRemaining)
+                color: root.dailyAlarming ? root.urgent : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+                anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+              }
+            }
+
+            Meter { width: parent.width; value: root.dailySpentRatio; alarming: root.dailyAlarming }
+
+            Item {
+              width: parent.width
+              implicitHeight: Math.max(weeklyBudgetLabel.implicitHeight, weeklyBudgetValue.implicitHeight)
+              Text { id: weeklyBudgetLabel; text: "Weekly"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter }
+              Text {
+                id: weeklyBudgetValue
                 text: Model.formatMoney(root.weeklyRemaining)
                 color: root.weeklyAlarming ? root.urgent : root.foreground
                 font.family: root.fontFamily
